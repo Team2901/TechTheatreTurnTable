@@ -25,6 +25,8 @@ public class TechTheatreTurnTable extends OpMode
     boolean previousSignal = false;
     Gamepad previousGamepad = new Gamepad();
 
+    boolean motorsAreOn = false;
+
     Double delta = 1.0;
 
     public enum AdjustableValue
@@ -42,7 +44,7 @@ public class TechTheatreTurnTable extends OpMode
         int nextOrdinal = (current.ordinal() - 1 + values.length) % values.length;
         return values[nextOrdinal];
     }
-    private final Map<AdjustableValue,Double> adjustableValues = new HashMap<>(Map.ofEntries(
+    private HashMap<AdjustableValue,Double> adjustableValues = new HashMap<>(Map.ofEntries(
         Map.entry(AdjustableValue.SetSpeed, 1.0),
         Map.entry(AdjustableValue.SignalThreshold, 2.5)));
     AdjustableValue currentlyAdjustingValue = AdjustableValue.SetSpeed;
@@ -68,7 +70,8 @@ public class TechTheatreTurnTable extends OpMode
                             String.join(", ", hardwareMap.getAllNames(AnalogInput.class))));
         }
 
-        // TODO: Load the saved values from a config file
+        // Load the saved values from a config file
+        LoadValues();
     }
 
     @Override
@@ -77,14 +80,19 @@ public class TechTheatreTurnTable extends OpMode
             return;
         }
 
+        // Do the unboxing up here.
+        // The null checks are just to make the inspector happy.
+        Double adjustableValue =adjustableValues.get(currentlyAdjustingValue);
+        if (adjustableValue == null) return;
+
         // User controls
         boolean valueChanged = false;
         if (gamepad1.dpad_up && !previousGamepad.dpad_up) {
-            adjustableValues.replace(currentlyAdjustingValue, adjustableValues.get(currentlyAdjustingValue) + delta);
+            adjustableValues.replace(currentlyAdjustingValue, adjustableValue + delta);
             valueChanged = true;
         }
         if (gamepad1.dpad_down && !previousGamepad.dpad_down) {
-            adjustableValues.replace(currentlyAdjustingValue, adjustableValues.get(currentlyAdjustingValue) - delta);
+            adjustableValues.replace(currentlyAdjustingValue, adjustableValue - delta);
             valueChanged = true;
         }
         if (gamepad1.dpad_left && !previousGamepad.dpad_left) {
@@ -94,31 +102,34 @@ public class TechTheatreTurnTable extends OpMode
             delta *= 10;
         }
         if (gamepad1.left_bumper && !previousGamepad.left_bumper) {
-            //adjustableValueIndex = (adjustableValueIndex - 1 + adjustableValues.length) % adjustableValues.length;
             currentlyAdjustingValue = getNextAdjustableValue(currentlyAdjustingValue);
         }
         if (gamepad1.right_bumper && !previousGamepad.right_bumper) {
-            //adjustableValueIndex = (adjustableValueIndex + 1 ) % adjustableValues.length;
             currentlyAdjustingValue = getPrevAdjustableValue(currentlyAdjustingValue);
         }
-        boolean forceOn = false;
-        if (gamepad1.a && !previousGamepad.a) {
-            forceOn = true;
-        }
-        boolean forceStop = false;
-        if (gamepad1.b && !previousGamepad.b) {
-            forceStop = true;
-        }
+        boolean forceOn = gamepad1.a && !previousGamepad.a;
+        boolean forceStop = gamepad1.b && !previousGamepad.b;
 
+        // Do the unboxing up here.
+        // The null checks are just to make the inspector happy.
+        Double setSpeed = adjustableValues.get(AdjustableValue.SetSpeed);
+        if (setSpeed == null) return;
+        Double signalThreshold = adjustableValues.get(AdjustableValue.SignalThreshold);
+        if (signalThreshold == null) return;
 
         // The signal is active high -- when the voltage is high, the motor should be on
         double currentSignalVoltage = controlSignal.getVoltage();
-        boolean currentSignal = currentSignalVoltage > adjustableValues.get(AdjustableValue.SignalThreshold);
+        boolean currentSignal = currentSignalVoltage > signalThreshold;
 
-        // If there is a change in the signal, or the user forces the motor change, change the behavior
-        if (((currentSignal != previousSignal) && currentSignal) || forceOn || (currentSignal && valueChanged)) {
-            setMotorSpeed(adjustableValues.get(AdjustableValue.SetSpeed));
-        } else if (((currentSignal != previousSignal) && !currentSignal) || forceStop) {
+        // Change the motor speed when:
+        // 1. There is a change in the signal
+        // 2. The user forces the change
+        // 3. The user changes the speed and the motors are on
+        boolean signalRisingEdge = (currentSignal != previousSignal) && currentSignal;
+        boolean signalFallingEdge = (currentSignal != previousSignal) && !currentSignal;
+        if (signalRisingEdge || forceOn || (motorsAreOn && valueChanged)) {
+            setMotorSpeed(setSpeed);
+        } else if (signalFallingEdge || forceStop) {
             setMotorSpeed(0);
         }
 
@@ -142,7 +153,7 @@ public class TechTheatreTurnTable extends OpMode
         telemetry.addData("signal voltage", currentSignalVoltage);
         telemetry.addData("signal threshold", adjustableValues.get(AdjustableValue.SignalThreshold));
         telemetry.addData("set speed (rps)", adjustableValues.get(AdjustableValue.SetSpeed));
-        telemetry.addData("set speed (tps)", TICKS_PER_REV * adjustableValues.get(AdjustableValue.SetSpeed));
+        telemetry.addData("set speed (tps)", TICKS_PER_REV * setSpeed);
         if (motor0 != null) telemetry.addData("current speed (0)", motor0.getVelocity());
         if (motor1 != null) telemetry.addData("current speed (1)", motor1.getVelocity());
         if (motor2 != null) telemetry.addData("current speed (2)", motor2.getVelocity());
@@ -153,13 +164,27 @@ public class TechTheatreTurnTable extends OpMode
 
     @Override
     public void stop() {
-        // TODO: Save the current values to a config file
+        SaveValues();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void LoadValues() {
+        adjustableValues = FileUtilities.readObjectFromFile("config.json", adjustableValues.getClass());
+    }
+
+    private void SaveValues() {
+        // Save the current values to a config file
+        FileUtilities.writeObjectToFile("config.json", adjustableValues);
     };
 
     private void setMotorSpeed(double revolutionsPerSecond) {
         if (motor0 != null) motor0.setVelocity(TICKS_PER_REV * revolutionsPerSecond);
         if (motor1 != null) motor1.setVelocity(TICKS_PER_REV * revolutionsPerSecond);
         if (motor2 != null) motor2.setVelocity(TICKS_PER_REV * revolutionsPerSecond);
+
+        // Update our state
+        // Normally double should not be equals, but 0 is okay
+        motorsAreOn = revolutionsPerSecond != 0;
     }
 
     private void setMotorMode(DcMotor.RunMode mode) {
